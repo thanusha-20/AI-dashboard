@@ -1,1 +1,181 @@
-jugggh
+import streamlit as st
+import pandas as pd
+import google.generativeai as genai
+import plotly.express as px
+import plotly.graph_objects as go
+import re
+
+# --- 1. SET PAGE CONFIG (Must be first) ---
+st.set_page_config(
+    page_title=" AI Business Dashboard",
+    page_icon="👩🏻‍💻",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- 2. CUSTOM CSS FOR PREMIUM LOOK ---
+st.markdown("""
+    <style>
+    .stApp { background-color: #fcfcfc; }
+    [data-testid="stMetric"] {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        background-color: #2e7d32;
+        color: white;
+        font-weight: bold;
+        border: none;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #1b5e20;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    section[data-testid="stSidebar"] {
+        background-color: #f1f3f4;
+        border-right: 1px solid #ddd;
+    }
+    h1 {
+        color: #1a237e;
+        font-family: 'Helvetica Neue', sans-serif;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 3. API CONFIGURATION ---
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except:
+    API_KEY = "you are api key"
+
+genai.configure(api_key=API_KEY)
+
+# --- 4. SYSTEM INSTRUCTIONS ---
+system_message = """
+You are an expert Data Scientist and Streamlit Developer. 
+Your goal is to analyze CSV data and provide interactive visualizations.
+RULES:
+1. Always use Plotly Express (imported as px) for charts.
+2. Only provide Python code inside a block starting with ```python.
+3. Provide a clear 2-sentence business insight before the code.
+4. Use 'st.plotly_chart(fig, use_container_width=True)'.
+5. CRITICAL: If the dataframe 'df' has many rows, ALWAYS aggregate (groupby/sum/count) before plotting.
+"""
+
+model = genai.GenerativeModel(
+    model_name='models/gemini-2.5-flash', # Using 2.0 for faster response
+    system_instruction=system_message
+)
+
+# --- 5. FIXED LOADING FUNCTION (Fixes the Unicode Error in your photo) ---
+@st.cache_data
+def load_data_optimized(file):
+    for enc in ['utf-8', 'latin1', 'iso-8859-1', 'cp1252']:
+        try:
+            file.seek(0)
+            return pd.read_csv(file, encoding=enc, low_memory=False)
+        except Exception:
+            continue
+    return None
+
+# --- 6. SIDEBAR / UPLOAD ---
+with st.sidebar:
+    st.title("  📥 DataIntel AI  ")
+    st.markdown("---")
+    uploaded_file = st.file_uploader("Upload Business Data (CSV)", type=["csv"])
+    
+    if uploaded_file:
+        st.success("File Ready for Analysis!")
+        st.divider()
+
+# --- 7. MAIN DASHBOARD LOGIC ---
+st.title(" 📈 AI Data Intelligence Dashboard")
+st.caption("Empowering business decisions with Generative AI and Interactive Analytics.")
+
+if uploaded_file:
+    df = load_data_optimized(uploaded_file)
+    
+    if df is not None:
+        df.columns = df.columns.str.strip()
+
+        # KPI METRICS
+        st.markdown("### 📝 Business Overview")
+        m1, m2, m3, m4 = st.columns(4)
+        
+        sales_val = df['Sales'].sum() if 'Sales' in df.columns else len(df)
+        sales_label = "Total Revenue" if 'Sales' in df.columns else "Total Records"
+        
+        m1.metric(sales_label, f"{sales_val:,.0f}")
+        m2.metric("Unique Items", f"{len(df.iloc[:, 0].unique()):,}")
+        m3.metric("Data Columns", len(df.columns))
+        m4.metric("Memory", f"{df.memory_usage().sum() / 1024**2:.1f} MB")
+
+        st.markdown("---")
+
+        tab1, tab2, tab3 = st.tabs(["🔗 AI Analyst", " 📌Custom Builder", " 🔎Data Explorer"])
+
+        with tab1:
+            st.subheader("Ask the AI Anything")
+            query = st.text_input("", placeholder="e.g., 'Show sales by category'", key="user_query")
+            
+            if st.button("Generate Insight"):
+                if query:
+                    # Added a status container for better feedback
+                    status_box = st.empty()
+                    with st.spinner("AI is crunching the numbers..."):
+                        try:
+                            # 1. Provide only metadata to the AI (prevents token hang)
+                            data_info = f"Columns: {list(df.columns)}\nRows: {len(df)}\nSample: {df.head(2).to_dict()}"
+                            prompt = f"Dataset Context:\n{data_info}\n\nUser Question: {query}"
+                            
+                            response = model.generate_content(prompt)
+                            
+                            # 2. Extract components
+                            parts = re.split(r"```python", response.text)
+                            st.info(parts[0].strip())
+                            
+                            if len(parts) > 1:
+                                code = parts[1].split("```")[0].strip()
+                                # 3. FIXED EXECUTION: Passing necessary libraries into the exec context
+                                ctx = {'df': df, 'px': px, 'go': go, 'st': st, 'pd': pd}
+                                exec(code, ctx)
+                                
+                            st.toast("Analysis Complete!", icon="✅")
+                        except Exception as e:
+                            st.error(f"Analysis failed: {e}")
+                else:
+                    st.warning("Please enter a question.")
+
+        with tab2:
+            st.subheader("Manual Visualization Builder")
+            # Sample for performance
+            sample_df = df.sample(min(10000, len(df)))
+            c1, c2, c3 = st.columns([1, 1, 2])
+            with c1:
+                chart_type = st.selectbox("Type", ["Bar", "Pie", "Line"], key="m_type")
+                x_axis = st.selectbox("X-Axis", df.columns, key="m_x")
+            with c2:
+                y_axis = st.selectbox("Y-Axis", df.columns, key="m_y")
+            with c3:
+                if chart_type == "Bar": fig = px.bar(sample_df, x=x_axis, y=y_axis)
+                elif chart_type == "Pie": fig = px.pie(sample_df, names=x_axis, values=y_axis)
+                else: fig = px.line(sample_df, x=x_axis, y=y_axis)
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab3:
+            st.subheader("Raw Dataset")
+            st.dataframe(df.head(500), use_container_width=True)
+    else:
+        st.error("Error: Could not decode the file. Please use a standard CSV format.")
+else:
+    st.info("Please upload a CSV file to get started.")
+
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: grey;'>Built with Gemini 2.5 Flash</p>", unsafe_allow_html=True)
